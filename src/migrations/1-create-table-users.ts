@@ -1,17 +1,39 @@
-import pg from 'pg';
+import sequelize from 'sequelize';
 
-export const name = 'create table "users"';
+type Data = {
+  context: sequelize.QueryInterface;
+};
 
-export function up(db: pg.Pool): Promise<unknown> {
-  return db.query(`
-  create table if not exist "users" (
-    id bigint not null primary key,
-    balance float not null
-  )`);
+export const tableName = 'users';
+
+export function up({ context: queryInterface }: Data): Promise<unknown> {
+  return queryInterface.createTable(tableName, {
+    id: {
+      type: sequelize.DataTypes.INTEGER,
+      allowNull: false,
+      primaryKey: true,
+      autoIncrement: true
+    },
+    createdAt: {
+      type: sequelize.DataTypes.DATE,
+      defaultValue: sequelize.literal('CURRENT_TIMESTAMP')
+    },
+    updatedAt: {
+      type: sequelize.DataTypes.DATE,
+      defaultValue: sequelize.literal('CURRENT_TIMESTAMP')
+    },
+    balance: {
+      type: sequelize.DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      validate: {
+        min: 0,
+        isInt: true
+      }
+    }
+  });
 }
 
-export function down(db: pg.Pool): Promise<unknown> {
-  return db.query(`
-  drop table if exist "users"
-  `);
+export function down({ context: queryInterface }: Data): Promise<unknown> {
+  return queryInterface.dropTable(tableName);
 }

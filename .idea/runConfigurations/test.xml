@@ -1,0 +1,5 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="test" type="NodeJSConfigurationType" application-parameters="test" path-to-js-file="node_modules/.bin/ts-node" working-dir="$PROJECT_DIR$">
+    <method v="2" />
+  </configuration>
+</component>

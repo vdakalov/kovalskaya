@@ -1,9 +1,14 @@
 import http from 'http';
 import express from 'express';
 import sequelize from 'sequelize';
-import umzug from 'umzug';
+import { Umzug, SequelizeStorage } from 'umzug';
 
-import migration1 from './migrations/1-create-table-users';
+import {
+  Type as UserBalanceUpdateDto,
+  schema as userBalanceValidationUpdateSchema
+} from './dto/user-balance-update.dto';
+
+import { init as initUserModel, tableName as userTableName } from './models/user';
 
 export type Options = {
   dbUrl: string;
@@ -11,114 +16,99 @@ export type Options = {
   host?: string;
 };
 
-export default class Application {
+type Cache = {
+  [key: number]: {
+    user: Promise<sequelize.Model | null> | sequelize.Model;
+    update?: Promise<void> | void;
+    error?: {
+      code: number;
+      message: string;
+    };
+  }
+};
 
-  public static readonly defaultOptions: Options = {
+export default async function main(options?: Partial<Options>): Promise<void> {
+  // define options
+  const { dbUrl, port, host } = Object.assign({}, {
     dbUrl: 'postgresql://localhost:5432',
     port: 8080,
     host: '127.0.0.1'
-  };
+  }, options);
 
-  private destroyed: boolean = false;
+  // connect to db
+  const sequelizeInstance = new sequelize.Sequelize(dbUrl);
+  await sequelizeInstance.authenticate();
+  const queryInterface = sequelizeInstance.getQueryInterface();
 
-  private readonly options: Options;
+  // apply migrations
+  const umzugInstance = new Umzug({
+    migrations: { glob: 'src/migrations/*.ts' },
+    context: queryInterface,
+    storage: new SequelizeStorage({ sequelize: sequelizeInstance }),
+    logger: console
+  });
+  await umzugInstance.up();
 
-  private readonly db: sequelize.Sequelize;
+  // initialize models
+  const UserModel = initUserModel(sequelizeInstance, userTableName);
 
-  private readonly express: express.Express;
+  // initialize cache
+  const cache: Cache = {};
 
-  private readonly httpServer: http.Server;
-
-  private readonly promises: Promise<unknown>[] = [];
-
-  constructor(options?: Partial<Options>) {
-    this.options = Object.assign({}, Application.defaultOptions, options);
-    this.db = this.initializeDbConnection();
-    this.express = this.initializeExpressApplication();
-    this.httpServer = this.initializeHttpServer();
-
-    Promise
-      .all(this.promises)
-      .then(this.initialize.bind(this))
-      .catch(error => {
-        console.log('Unable to initialize application', error)
-        return this.destroy();
-      });
-  }
-
-  private initializeExpressApplication(): express.Express {
-    return express();
-  }
-
-  private initializeDbConnection(): sequelize.Sequelize {
-    const instance = new sequelize.Sequelize(this.options.dbUrl);
-    this.promises[this.promises.length] = instance
-      .authenticate()
-      .then(() => {
-        console.log('DB connected', { dbUrl: this.options.dbUrl });
-        return this.onDbConnected();
-      })
-      .catch(error => {
-        console.log('Unable to connect to database', error);
-        return this.destroy();
-      });
-    return instance;
-  }
-
-  private async onDbConnected(): Promise<void> {
-    await this.applyMigrations();
-  }
-
-  private async applyMigrations(): Promise<void> {
-    const umzugInstance = new umzug.Umzug({
-      migrations: { glob: 'migrations/*.ts' },
-      context: this.db.getQueryInterface(),
-      storage: new umzug.SequelizeStorage({ sequelize: this.db }),
-      logger: console
+  // initialize express application
+  const expressInstance = express();
+  expressInstance
+    .use(express.json())
+    .put<{}, {}, UserBalanceUpdateDto>('/', (req, res) => {
+      const { error } = userBalanceValidationUpdateSchema.validate(req.body);
+      if (error) {
+        res.status(400).send({ error: error.message });
+        return;
+      }
+      if (!cache.hasOwnProperty(req.body.userId)) {
+        cache[req.body.userId] = {
+          user: UserModel.findOne({ where: { id: req.body.userId } })
+        };
+      }
+      const item = cache[req.body.userId];
+      if (item.user instanceof sequelize.Model) {
+        const user = item.user;
+        if (item.update instanceof Promise) {
+          return item.update
+            .then(() => item.update = updateUserBalance(res, user, req.body.amount))
+            .catch(error => res.status(500).send({ error: error.message }));
+        }
+      } else if (item.user instanceof Promise) {
+        return item.user
+          .then(user => item.update = onUserLookupResult(res, req.body.amount, user))
+          .catch(error => res.status(500).send({ error: error.message }));
+      }
+      return item.update = updateUserBalance(res, item.user, req.body.amount);
     });
 
-    declare global {
-      type UmzugMigration = typeof umzugInstance._types.migration;
-    }
+  // create and run http-server
+  const httpServerInstance: http.Server = new http.Server(expressInstance)
+    .on('listening', () => console.log('HttpServer: listening at', httpServerInstance.address()))
+    .on('error', error => console.log('HttpServer: Unable to start', error))
+    .listen(port, host);
+}
 
-    await umzugInstance.up();
+function onUserLookupResult(res: express.Response, amount: number, user: sequelize.Model | null): void | Promise<void> {
+  if (!user) {
+    res.status(404).send({ error: 'No user found' });
+    return;
   }
+  return updateUserBalance(res, user, amount);
+}
 
-  private initializeHttpServer(): http.Server {
-    return new http.Server(this.express)
-      .on('listening', () => console.log('HttpServer: listening at', this.httpServer.address()))
-      .on('error', error => {
-        console.log('Unable to start http-server', error);
-        this.destroy();
-      })
-      .listen(this.options.port, this.options.host);
-  }
-
-  private async initialize(): Promise<void> {
-    this.db.query(`
-      create table if not exists "migrations" (
-        created_at timestamptz NOT NULL DEFAULT current_timestamp,
-        "name" varchar NOT NULL
-      )`)
-      .then(result => {
-        this.db.query(`insert into "migrations`)
-      })
-      .catch(error => {
-        debugger;
+function updateUserBalance(res: express.Response, user: sequelize.Model, amount: number): void | Promise<void> {
+  const balance = user.getDataValue('balance') - amount;
+  if (balance >= 0) {
+    return user
+      .update({ balance })
+      .then(() => {
+        res.send();
       });
-
-
   }
-
-  public async destroy(): Promise<void> {
-    if (this.destroyed) {
-      return Promise.resolve();
-    }
-    this.destroyed = true;
-    if (this.httpServer.listening) {
-      await new Promise<void>((resolve, reject) =>
-        this.httpServer.close(error => error ? reject(error) : resolve()));
-    }
-    await this.db.end();
-  }
+  res.status(400).send({ error: 'User balance not enough' });
 }

@@ -1,5 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="bootstrap" type="NodeJSConfigurationType" application-parameters="src/libs/bootstrap --db-url=postgresql://user:1@localhost" path-to-js-file="node_modules/.bin/ts-node" working-dir="$PROJECT_DIR$">
+  <configuration default="false" name="bootstrap" type="NodeJSConfigurationType" application-parameters="src/libs/bootstrap" path-to-js-file="node_modules/.bin/ts-node" working-dir="$PROJECT_DIR$">
     <method v="2" />
   </configuration>
 </component>
